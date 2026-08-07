@@ -574,7 +574,7 @@ NO_AUDIO = "（音声なし）"
 
 def run_gui() -> int:
     import tkinter as tk
-    from tkinter import filedialog, font as tkfont, messagebox, ttk
+    from tkinter import font as tkfont, messagebox, ttk
 
     dpi = enable_dpi_awareness()
     root = tk.Tk()
@@ -621,10 +621,9 @@ def run_gui() -> int:
     v_acodec = tk.StringVar(value="aac")
     v_abr = tk.StringVar(value="192k")
 
-    default_out = os.path.join(
-        os.path.expanduser("~"), "Videos",
-        "capture_" + dt.datetime.now().strftime("%Y%m%d_%H%M%S") + ".mp4")
-    v_out = tk.StringVar(value=default_out)
+    # 出力はカレントディレクトリ固定。コマンドをそのまま他所に貼れるようファイル名だけを持つ
+    v_out = tk.StringVar(
+        value="capture_" + dt.datetime.now().strftime("%Y%m%d_%H%M%S") + ".mp4")
     v_overwrite = tk.BooleanVar(value=True)
     v_limit_on = tk.BooleanVar(value=False)
     v_limit = tk.StringVar(value="00:10:00")
@@ -829,27 +828,25 @@ def run_gui() -> int:
     f_out.grid(row=1, column=1, sticky="nsew", padx=(4, 0))
     f_out.columnconfigure(0, weight=1)
 
+    ttk.Label(f_out, text="ファイル名（カレントディレクトリに出力）"
+              ).grid(row=0, column=0, sticky="w")
     e_out = ttk.Entry(f_out, textvariable=v_out)
-    e_out.grid(row=0, column=0, sticky="ew")
-    e_out.bind("<KeyRelease>", refresh_preview)
+    e_out.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
-    def choose_out():
-        p = filedialog.asksaveasfilename(
-            title="保存先", defaultextension=".mp4",
-            initialfile=os.path.basename(v_out.get()),
-            initialdir=os.path.dirname(v_out.get()) or None,
-            filetypes=[("MP4", "*.mp4"), ("Matroska", "*.mkv"),
-                       ("MOV", "*.mov"), ("すべて", "*.*")])
-        if p:
-            v_out.set(p)
-            refresh_preview()
+    lbl_cwd = ttk.Label(f_out, foreground="#666", wraplength=wrap(380))
+    lbl_cwd.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
-    ttk.Button(f_out, text="参照…", command=choose_out).grid(row=0, column=1, padx=(4, 0))
+    def refresh_outpath(*_):
+        lbl_cwd.configure(text="→ " + os.path.abspath(v_out.get().strip() or "."))
+        refresh_preview()
+
+    e_out.bind("<KeyRelease>", refresh_outpath)
+
     ttk.Checkbutton(f_out, text="既存ファイルを上書きする (-y)", variable=v_overwrite,
-                    command=refresh_preview).grid(row=1, column=0, sticky="w", pady=(4, 0))
+                    command=refresh_preview).grid(row=3, column=0, sticky="w", pady=(4, 0))
 
     f_lim = ttk.Frame(f_out)
-    f_lim.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    f_lim.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
     ttk.Checkbutton(f_lim, text="最大録画時間 (-t)", variable=v_limit_on,
                     command=lambda: on_limit()).grid(row=0, column=0)
     cb_limit = ttk.Combobox(f_lim, textvariable=v_limit, width=12,
@@ -861,10 +858,10 @@ def run_gui() -> int:
 
     ttk.Label(f_out, text="※ 時間は HH:MM:SS か秒数 (90, 90.5) で指定します。"
                          "この時間で ffmpeg が自分から正常終了します。",
-              foreground="#666", wraplength=wrap(380)).grid(row=3, column=0, columnspan=2,
+              foreground="#666", wraplength=wrap(380)).grid(row=5, column=0, columnspan=2,
                                                             sticky="w", pady=(2, 0))
     ttk.Label(f_out, text="※ MP4 は正常終了が必要です。中断が心配なら .mkv を推奨。",
-              foreground="#666", wraplength=wrap(380)).grid(row=4, column=0, columnspan=2,
+              foreground="#666", wraplength=wrap(380)).grid(row=6, column=0, columnspan=2,
                                                             sticky="w", pady=(2, 0))
 
     # --- コマンドプレビュー + ログ ---
@@ -1138,11 +1135,9 @@ def run_gui() -> int:
         if err:
             messagebox.showwarning("入力を確認してください", err)
             return
-        outdir = os.path.dirname(c.outfile)
-        if outdir and not os.path.isdir(outdir):
-            os.makedirs(outdir, exist_ok=True)
         argv = build_args(c)
         log("実行: " + command_line(c))
+        log(f"出力先: {os.path.abspath(c.outfile)}")
         if c.duration:
             sec = duration_seconds(c.duration) or 0.0
             end = dt.datetime.now() + dt.timedelta(seconds=sec)
@@ -1234,6 +1229,7 @@ def run_gui() -> int:
     on_vcodec()
     on_source()
     on_limit()
+    refresh_outpath()
     refresh_windows()
     refresh_audio(True)
     threading.Thread(target=probe_encoders, daemon=True).start()

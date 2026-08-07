@@ -92,6 +92,16 @@ Realtek などのドライバが持っていても既定で無効化されてい
 起動時に `ffmpeg -encoders` を叩いて、実際に使えるものだけを候補に出します。
 品質指定（CRF / CQ / QP / global_quality）はエンコーダごとに適切なオプションへ振り分けます。
 
+### 出力先
+
+**カレントディレクトリに出力します。** 指定するのはファイル名だけで、保存先ダイアログはありません。
+生成されるコマンドの末尾も `capture_20260807_194530.mp4` のような相対パスになるので、
+コピーして別のフォルダやバッチに貼れば、そのフォルダに出ます。
+
+GUI から実行した場合の「カレントディレクトリ」は ffcapture を起動したフォルダです
+（ダブルクリック起動なら `ffcapture.pyw` が置いてあるフォルダ）。
+実際の絶対パスはファイル名欄の下に表示され、録画開始時にもログへ出します。
+
 ### 最大録画時間
 
 「最大録画時間 (-t)」をチェックすると `-t <時間>` を出力側に付けます。
@@ -111,7 +121,7 @@ ffmpeg -hide_banner -y -f gdigrab -framerate 30 -draw_mouse 1 -thread_queue_size
   -map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -crf 23 ^
   -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -pix_fmt yuv420p ^
   -c:a aac -b:a 192k -af aresample=async=1:first_pts=0 ^
-  -movflags +faststart output.mp4
+  -movflags +faststart capture_20260807_194530.mp4
 ```
 
 ## 停止のしかた

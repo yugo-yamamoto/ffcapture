@@ -370,6 +370,24 @@ class Config:
         # output
         self.outfile = ""
         self.overwrite = True
+        self.duration = ""              # 空なら時間無制限 (-t を付けない)
+
+
+# ffmpeg の -t が受け付ける時間表記: 秒数 (90 / 90.5) または [HH:]MM:SS[.xxx]
+DURATION_RE = re.compile(r"^(?:\d+(?:\.\d+)?|(?:\d{1,3}:)?\d{1,2}:\d{1,2}(?:\.\d+)?)$")
+
+
+def duration_seconds(text: str) -> float | None:
+    """時間表記を秒に直す。ffmpeg が解釈できない書き方なら None。"""
+    t = text.strip()
+    if not DURATION_RE.match(t):
+        return None
+    if ":" not in t:
+        return float(t)
+    sec = 0.0
+    for part in t.split(":"):
+        sec = sec * 60 + float(part)
+    return sec
 
 
 def _scale_filter(scale: str) -> str:
@@ -440,6 +458,10 @@ def build_args(cfg: Config) -> list[str]:
             a += ["-b:a", cfg.abitrate]
         # 取りこぼしがあっても時刻を保つ
         a += ["-af", "aresample=async=1:first_pts=0"]
+
+    # ---- 最大録画時間 ----
+    if cfg.duration:
+        a += ["-t", cfg.duration]
 
     if cfg.outfile.lower().endswith(".mp4"):
         a += ["-movflags", "+faststart"]
@@ -521,6 +543,8 @@ def run_gui() -> int:
         "capture_" + dt.datetime.now().strftime("%Y%m%d_%H%M%S") + ".mp4")
     v_out = tk.StringVar(value=default_out)
     v_overwrite = tk.BooleanVar(value=True)
+    v_limit_on = tk.BooleanVar(value=False)
+    v_limit = tk.StringVar(value="00:10:00")
     v_status = tk.StringVar(value="待機中")
 
     # ---------------- ログ ----------------
@@ -567,11 +591,15 @@ def run_gui() -> int:
         c.abitrate = v_abr.get().strip() or "192k"
         c.outfile = v_out.get().strip()
         c.overwrite = v_overwrite.get()
+        c.duration = v_limit.get().strip() if v_limit_on.get() else ""
         return c
 
     def validate(c: Config) -> str | None:
         if c.source == "window" and not c.title:
             return "ウィンドウタイトルを選択してください。"
+        if c.duration and duration_seconds(c.duration) is None:
+            return ("最大録画時間の書式が不正です。"
+                    "HH:MM:SS（例 00:05:00）か秒数（例 300）で指定してください。")
         if not c.outfile:
             return "出力ファイルを指定してください。"
         return None
@@ -737,13 +765,29 @@ def run_gui() -> int:
     ttk.Button(f_out, text="参照…", command=choose_out).grid(row=0, column=1, padx=(4, 0))
     ttk.Checkbutton(f_out, text="既存ファイルを上書きする (-y)", variable=v_overwrite,
                     command=refresh_preview).grid(row=1, column=0, sticky="w", pady=(4, 0))
-    ttk.Label(f_out, text="※ MP4 は正常終了が必要です。中断が心配なら .mkv を推奨。",
-              foreground="#666", wraplength=wrap(380)).grid(row=2, column=0, columnspan=2,
-                                                      sticky="w", pady=(2, 0))
 
-    ttk.Label(f_out, text="ffmpeg のパス").grid(row=3, column=0, sticky="w", pady=(8, 0))
+    f_lim = ttk.Frame(f_out)
+    f_lim.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    ttk.Checkbutton(f_lim, text="最大録画時間 (-t)", variable=v_limit_on,
+                    command=lambda: on_limit()).grid(row=0, column=0)
+    cb_limit = ttk.Combobox(f_lim, textvariable=v_limit, width=12,
+                            values=["00:00:30", "00:01:00", "00:05:00", "00:10:00",
+                                    "00:30:00", "01:00:00", "02:00:00"])
+    cb_limit.grid(row=0, column=1, padx=4)
+    lbl_limit = ttk.Label(f_lim, text="", foreground="#666")
+    lbl_limit.grid(row=0, column=2)
+
+    ttk.Label(f_out, text="※ 時間は HH:MM:SS か秒数 (90, 90.5) で指定します。"
+                         "この時間で ffmpeg が自分から正常終了します。",
+              foreground="#666", wraplength=wrap(380)).grid(row=3, column=0, columnspan=2,
+                                                            sticky="w", pady=(2, 0))
+    ttk.Label(f_out, text="※ MP4 は正常終了が必要です。中断が心配なら .mkv を推奨。",
+              foreground="#666", wraplength=wrap(380)).grid(row=4, column=0, columnspan=2,
+                                                            sticky="w", pady=(2, 0))
+
+    ttk.Label(f_out, text="ffmpeg のパス").grid(row=5, column=0, sticky="w", pady=(8, 0))
     e_ff = ttk.Entry(f_out, textvariable=v_ffmpeg)
-    e_ff.grid(row=4, column=0, sticky="ew")
+    e_ff.grid(row=6, column=0, sticky="ew")
     e_ff.bind("<KeyRelease>", refresh_preview)
 
     def choose_ffmpeg():
@@ -753,7 +797,7 @@ def run_gui() -> int:
             v_ffmpeg.set(p)
             refresh_preview()
 
-    ttk.Button(f_out, text="参照…", command=choose_ffmpeg).grid(row=4, column=1, padx=(4, 0))
+    ttk.Button(f_out, text="参照…", command=choose_ffmpeg).grid(row=6, column=1, padx=(4, 0))
 
     # --- コマンドプレビュー + ログ ---
     lower = ttk.Frame(root, padding=(8, 0, 8, 8))
@@ -823,6 +867,21 @@ def run_gui() -> int:
         v_qlabel.set(enc["quality_label"])
         refresh_preview()
 
+    def on_limit(*_):
+        on = v_limit_on.get()
+        cb_limit.configure(state="normal" if on else "disabled")
+        if not on:
+            lbl_limit.configure(text="", foreground="#666")
+        else:
+            sec = duration_seconds(v_limit.get())
+            if sec is None:
+                lbl_limit.configure(text="書式が不正です", foreground="#b00020")
+            else:
+                lbl_limit.configure(text=f"= {sec:g} 秒", foreground="#666")
+        refresh_preview()
+
+    cb_limit.bind("<<ComboboxSelected>>", on_limit)
+    cb_limit.bind("<KeyRelease>", on_limit)
     cb_vc.bind("<<ComboboxSelected>>", on_vcodec)
     for cb in (cb_win, cb_audio, cb_preset):
         cb.bind("<<ComboboxSelected>>", refresh_preview)
@@ -1016,6 +1075,10 @@ def run_gui() -> int:
             os.makedirs(outdir, exist_ok=True)
         argv = build_args(c)
         log("実行: " + command_line(c))
+        if c.duration:
+            sec = duration_seconds(c.duration) or 0.0
+            end = dt.datetime.now() + dt.timedelta(seconds=sec)
+            log(f"最大録画時間 {c.duration} ({sec:g} 秒)。{end:%H:%M:%S} 頃に自動終了します。")
 
         try:
             proc = subprocess.Popen(
@@ -1099,6 +1162,7 @@ def run_gui() -> int:
     log(f"python: {sys.executable}")
     on_vcodec()
     on_source()
+    on_limit()
     refresh_windows()
     refresh_audio(True)
     threading.Thread(target=probe_encoders, daemon=True).start()

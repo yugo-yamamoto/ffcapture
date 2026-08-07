@@ -1,6 +1,7 @@
 """ffcapture - Windows 用 画面キャプチャ ffmpeg コマンドビルダー (Tkinter GUI)
 
 依存は標準ライブラリのみ。uv は使わず python.exe / pythonw.exe で直接動かす。
+ffmpeg / ffprobe は PATH 上にある前提で、常に `ffmpeg` として呼ぶ。
 
     pythonw ffcapture.py            GUI を起動 (コンソールなし)
     python  ffcapture.py            GUI を起動 (コンソールあり)
@@ -266,17 +267,17 @@ def open_sound_control_panel():
 # --------------------------------------------------------------------------------------
 
 
-def _run_ffmpeg(ffmpeg: str, args: list[str], timeout: int = 30):
-    return subprocess.run([ffmpeg, "-hide_banner", *args],
+def _run_ffmpeg(args: list[str], timeout: int = 30):
+    return subprocess.run(["ffmpeg", "-hide_banner", *args],
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout,
                           creationflags=CREATE_NO_WINDOW)
 
 
-def list_dshow_audio(ffmpeg: str) -> list[str]:
+def list_dshow_audio() -> list[str]:
     """ffmpeg -list_devices から DirectShow の音声デバイス名を取り出す。"""
     try:
-        r = _run_ffmpeg(ffmpeg, ["-list_devices", "true", "-f", "dshow", "-i", "dummy"], 20)
+        r = _run_ffmpeg(["-list_devices", "true", "-f", "dshow", "-i", "dummy"], 20)
     except Exception:
         return []
     out = (r.stderr or "") + (r.stdout or "")
@@ -288,9 +289,9 @@ def list_dshow_audio(ffmpeg: str) -> list[str]:
     return names
 
 
-def list_ffmpeg_encoders(ffmpeg: str) -> set[str]:
+def list_ffmpeg_encoders() -> set[str]:
     try:
-        r = _run_ffmpeg(ffmpeg, ["-encoders"])
+        r = _run_ffmpeg(["-encoders"])
     except Exception:
         return set()
     return {m.group(1) for m in re.finditer(r"^\s*[A-Z.]{6}\s+(\S+)", r.stdout, re.M)}
@@ -348,7 +349,6 @@ class Config:
     """GUI の入力値をまとめた素の設定オブジェクト。"""
 
     def __init__(self):
-        self.ffmpeg = "ffmpeg"
         # video source
         self.source = "window"          # window | region | fullscreen
         self.title = ""
@@ -403,7 +403,7 @@ def _scale_filter(scale: str) -> str:
 
 def build_args(cfg: Config) -> list[str]:
     """ffmpeg の argv を組み立てる。"""
-    a: list[str] = [cfg.ffmpeg, "-hide_banner"]
+    a: list[str] = ["ffmpeg", "-hide_banner"]
     a += ["-y"] if cfg.overwrite else ["-n"]
 
     # ---- 入力 0: 映像 (gdigrab) ----
@@ -517,7 +517,6 @@ def run_gui() -> int:
     state: dict = {"proc": None, "loopback": None}
 
     # ---------------- 変数 ----------------
-    v_ffmpeg = tk.StringVar(value=shutil.which("ffmpeg") or "ffmpeg")
     v_source = tk.StringVar(value="window")
     v_title = tk.StringVar()
     v_x, v_y = tk.StringVar(value="0"), tk.StringVar(value="0")
@@ -568,7 +567,6 @@ def run_gui() -> int:
 
     def collect() -> Config:
         c = Config()
-        c.ffmpeg = v_ffmpeg.get().strip() or "ffmpeg"
         c.source = v_source.get()
         c.title = v_title.get().strip()
         c.x, c.y = as_int(v_x, 0), as_int(v_y, 0)
@@ -785,20 +783,6 @@ def run_gui() -> int:
               foreground="#666", wraplength=wrap(380)).grid(row=4, column=0, columnspan=2,
                                                             sticky="w", pady=(2, 0))
 
-    ttk.Label(f_out, text="ffmpeg のパス").grid(row=5, column=0, sticky="w", pady=(8, 0))
-    e_ff = ttk.Entry(f_out, textvariable=v_ffmpeg)
-    e_ff.grid(row=6, column=0, sticky="ew")
-    e_ff.bind("<KeyRelease>", refresh_preview)
-
-    def choose_ffmpeg():
-        p = filedialog.askopenfilename(
-            title="ffmpeg.exe", filetypes=[("実行ファイル", "*.exe"), ("すべて", "*.*")])
-        if p:
-            v_ffmpeg.set(p)
-            refresh_preview()
-
-    ttk.Button(f_out, text="参照…", command=choose_ffmpeg).grid(row=6, column=1, padx=(4, 0))
-
     # --- コマンドプレビュー + ログ ---
     lower = ttk.Frame(root, padding=(8, 0, 8, 8))
     lower.grid(row=1, column=0, sticky="nsew")
@@ -890,7 +874,7 @@ def run_gui() -> int:
 
     # ---------------- 音声デバイス列挙 ----------------
     def refresh_audio(verbose: bool = False):
-        names = list_dshow_audio(v_ffmpeg.get())
+        names = list_dshow_audio()
         cb_audio["values"] = [NO_AUDIO] + names
         if v_audio.get() not in cb_audio["values"]:
             v_audio.set(NO_AUDIO)
@@ -967,7 +951,7 @@ def run_gui() -> int:
     btn_enable.configure(command=enable_stereo_mix)
 
     def probe_encoders():
-        avail = list_ffmpeg_encoders(v_ffmpeg.get())
+        avail = list_ffmpeg_encoders()
         if not avail:
             log("ffmpeg を実行できませんでした。パスを確認してください。")
             return
@@ -1160,6 +1144,9 @@ def run_gui() -> int:
     if not IS_WINDOWS:
         log("警告: このツールは Windows 専用です (gdigrab / DirectShow)。")
     log(f"python: {sys.executable}")
+    if shutil.which("ffmpeg") is None:
+        log("警告: PATH 上に ffmpeg が見つかりません。"
+            "ffmpeg をインストールして PATH を通してください。")
     on_vcodec()
     on_source()
     on_limit()
@@ -1187,7 +1174,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Windows 画面キャプチャ ffmpeg コマンドビルダー")
     ap.add_argument("--list", action="store_true",
                     help="音声エンドポイントと DirectShow デバイスを一覧表示して終了")
-    ap.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
     args = ap.parse_args()
 
     if args.list:
@@ -1195,7 +1181,7 @@ def main() -> int:
         for e in list_capture_endpoints():
             print(f"  [{e['state_name']:<6}] 0x{e['state']:08X}  {e['name']}")
         print("== DirectShow 音声デバイス (ffmpeg) ==")
-        for n in list_dshow_audio(args.ffmpeg):
+        for n in list_dshow_audio():
             print(f"  {n}")
         return 0
     return run_gui()

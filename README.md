@@ -11,7 +11,8 @@ Windows 用の画面キャプチャ **ffmpeg コマンドラインビルダー**
 
 - Windows 10 / 11
 - Python 3.10 以降（`python.exe` / `pythonw.exe`）— **依存パッケージなし。標準ライブラリのみ**
-- [ffmpeg](https://www.gyan.dev/ffmpeg/builds/)（PATH に通すか、GUI 上でパスを指定）
+- [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) — **PATH を通しておくこと**。生成されるコマンドは
+  フルパスではなく素の `ffmpeg` で始まるので、そのまま他の PC にも貼れます
 
 ## 使い方
 

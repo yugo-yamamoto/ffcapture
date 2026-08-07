@@ -373,6 +373,36 @@ def list_dshow_audio() -> list[str]:
     return names
 
 
+def measure_audio_level(device: str, seconds: int = 3) -> tuple[float, float] | None:
+    """dshow デバイスから数秒録って (mean_dB, max_dB) を返す。失敗したら None。
+
+    「録音できているのに無音」なのか「そもそも開けていない」のかを切り分けるため。
+    """
+    import tempfile  # noqa: PLC0415
+
+    tmp = os.path.join(tempfile.gettempdir(), "ffcapture-audiotest.wav")
+    try:
+        rec = _run_ffmpeg(["-loglevel", "error", "-y",
+                           "-f", "dshow", "-rtbufsize", "256M",
+                           "-i", f"audio={device}", "-t", str(seconds), tmp],
+                          timeout=seconds + 25)
+        if rec.returncode != 0 or not os.path.exists(tmp):
+            return None
+        r = _run_ffmpeg(["-i", tmp, "-af", "volumedetect", "-f", "null", "-"])
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    mean = re.search(r"mean_volume:\s*(-?[\d.]+) dB", r.stderr or "")
+    peak = re.search(r"max_volume:\s*(-?[\d.]+) dB", r.stderr or "")
+    if not (mean and peak):
+        return None
+    return float(mean.group(1)), float(peak.group(1))
+
+
 def list_ffmpeg_encoders() -> set[str]:
     try:
         r = _run_ffmpeg(["-encoders"])
@@ -766,11 +796,13 @@ def run_gui() -> int:
                command=lambda: refresh_audio(True)).grid(row=0, column=1, padx=(4, 0))
 
     f_abuf = ttk.Frame(f_aud)
-    f_abuf.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    f_abuf.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
     ttk.Label(f_abuf, text="audio_buffer_size (ms)").grid(row=0, column=0)
     e_abuf = ttk.Entry(f_abuf, textvariable=v_abuf, width=6)
     e_abuf.grid(row=0, column=1, padx=4)
     e_abuf.bind("<KeyRelease>", refresh_preview)
+    btn_test = ttk.Button(f_abuf, text="音量を3秒テスト")
+    btn_test.grid(row=0, column=2, padx=(12, 0))
 
     ttk.Label(f_aud, textvariable=v_mixinfo, wraplength=wrap(390), foreground="#666"
               ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -973,7 +1005,10 @@ def run_gui() -> int:
         eps = find_loopback_endpoints()
         state["loopback"] = None
         if any(LOOPBACK_NAME_RE.search(n) for n in names):
-            v_mixinfo.set("PC の再生音を拾えるデバイスが利用可能です。")
+            v_mixinfo.set(
+                "このデバイスで再生中の音を録れます。ただしステレオミキサーが拾うのは"
+                "同じ再生デバイスに流れた音だけなので、USB や Bluetooth のヘッドセットで"
+                "再生していると無音になります。「音量を3秒テスト」で確認できます。")
             btn_enable.state(["disabled"])
         elif eps:
             target = next((e for e in eps if e["state_name"] == "無効"), eps[0])
@@ -1030,6 +1065,40 @@ def run_gui() -> int:
         threading.Thread(target=worker, daemon=True).start()
 
     btn_enable.configure(command=enable_stereo_mix)
+
+    def test_audio():
+        dev = v_audio.get().strip()
+        if dev in ("", NO_AUDIO):
+            log("音声ソースが「音声なし」です。デバイスを選んでからテストしてください。")
+            return
+        btn_test.state(["disabled"])
+        log(f"『{dev}』から 3 秒録音してレベルを測ります"
+            "（PC で音楽や動画を再生した状態で試してください）。")
+
+        def worker():
+            res = measure_audio_level(dev)
+            if res is None:
+                log("テスト失敗: デバイスを開けないか、音声を取得できませんでした。")
+            else:
+                mean, peak = res
+                log(f"測定結果: 平均 {mean:.1f} dB / ピーク {peak:.1f} dB")
+                # 無音でもノイズフロアで -78 dB 程度は出るため、-90 では判定できない
+                if peak <= -60.0:
+                    log("→ 実質無音です。何も再生していないか、ステレオミキサーとは別の"
+                        "再生デバイスに音が流れています。ステレオミキサーは自分と同じ"
+                        "再生デバイスの音しか拾えないので、USB や Bluetooth の"
+                        "ヘッドセット・スピーカーを使っていないか確認してください。")
+                elif peak < -30.0:
+                    log("→ 拾えてはいますが小さすぎます。「サウンド設定を開く」から"
+                        "録音タブを開き、ステレオミキサーのプロパティで"
+                        "レベルを上げてください。再生側の音量も確認を。")
+                else:
+                    log("→ 十分な音量です。")
+            root.after(0, lambda: btn_test.state(["!disabled"]))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    btn_test.configure(command=test_audio)
 
     def probe_encoders():
         avail = list_ffmpeg_encoders()

@@ -3,9 +3,11 @@
 依存は標準ライブラリのみ。uv は使わず python.exe / pythonw.exe で直接動かす。
 ffmpeg / ffprobe は PATH 上にある前提で、常に `ffmpeg` として呼ぶ。
 
-    pythonw ffcapture.py            GUI を起動 (コンソールなし)
-    python  ffcapture.py            GUI を起動 (コンソールあり)
-    python  ffcapture.py --list     音声エンドポイントと DirectShow デバイスを一覧表示
+    ffcapture.pyw をダブルクリック  GUI を起動 (コンソールなし)
+    pythonw ffcapture.pyw           同上
+    python  ffcapture.pyw --list    音声エンドポイントと DirectShow デバイスを一覧表示
+    python  ffcapture.pyw --register-pyw    .pyw を pythonw.exe に関連付ける
+    python  ffcapture.pyw --unregister-pyw  その関連付けを取り消す
 
 映像:
     - ウィンドウタイトル指定 (gdigrab -i title=...)
@@ -260,6 +262,88 @@ def open_sound_control_panel():
     subprocess.Popen(
         ["rundll32.exe", "shell32.dll,Control_RunDLL", "mmsys.cpl,,1"],
         creationflags=CREATE_NO_WINDOW)
+
+
+# --------------------------------------------------------------------------------------
+# .pyw の関連付け（ダブルクリックで GUI が開くようにする）
+# --------------------------------------------------------------------------------------
+
+PYW_PROGID = "Python.NoConFile.ffcapture"
+SHCNE_ASSOCCHANGED = 0x08000000
+
+
+def pythonw_path() -> str:
+    """コンソールを出さない pythonw.exe のパス。見つからなければ sys.executable。"""
+    exe = sys.executable or "pythonw.exe"
+    base = os.path.basename(exe)
+    if base.lower().startswith("pythonw"):
+        return exe
+    cand = os.path.join(os.path.dirname(exe), "pythonw" + base[len("python"):])
+    return cand if os.path.exists(cand) else exe
+
+
+def _notify_assoc_changed():
+    try:
+        ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, 0, None, None)
+    except Exception:
+        pass
+
+
+def register_pyw() -> str:
+    """HKCU に .pyw → pythonw.exe の関連付けを書く（管理者権限不要）。"""
+    import winreg  # noqa: PLC0415
+
+    exe = pythonw_path()
+    hkcu = winreg.HKEY_CURRENT_USER
+    with winreg.CreateKey(hkcu, r"Software\Classes\.pyw") as k:
+        winreg.SetValue(k, "", winreg.REG_SZ, PYW_PROGID)
+    with winreg.CreateKey(hkcu, rf"Software\Classes\{PYW_PROGID}") as k:
+        winreg.SetValue(k, "", winreg.REG_SZ, "Python GUI スクリプト")
+    with winreg.CreateKey(hkcu, rf"Software\Classes\{PYW_PROGID}\DefaultIcon") as k:
+        winreg.SetValue(k, "", winreg.REG_SZ, f"{exe},0")
+    with winreg.CreateKey(hkcu, rf"Software\Classes\{PYW_PROGID}\shell\open\command") as k:
+        winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "%1" %*')
+    _notify_assoc_changed()
+    return exe
+
+
+def unregister_pyw() -> None:
+    """register_pyw() が書いたキーを消す。"""
+    import winreg  # noqa: PLC0415
+
+    hkcu = winreg.HKEY_CURRENT_USER
+    for path in (rf"Software\Classes\{PYW_PROGID}\shell\open\command",
+                 rf"Software\Classes\{PYW_PROGID}\shell\open",
+                 rf"Software\Classes\{PYW_PROGID}\shell",
+                 rf"Software\Classes\{PYW_PROGID}\DefaultIcon",
+                 rf"Software\Classes\{PYW_PROGID}",
+                 r"Software\Classes\.pyw"):
+        try:
+            winreg.DeleteKey(hkcu, path)
+        except OSError:
+            pass
+    _notify_assoc_changed()
+
+
+def pyw_association() -> str | None:
+    """現在 .pyw に割り当てられている ProgID。未設定なら None。"""
+    import winreg  # noqa: PLC0415
+
+    for root, path in ((winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+                        r"\FileExts\.pyw\UserChoice"),
+                       (winreg.HKEY_CURRENT_USER, r"Software\Classes\.pyw"),
+                       (winreg.HKEY_CLASSES_ROOT, ".pyw")):
+        try:
+            with winreg.OpenKey(root, path) as k:
+                value = (winreg.QueryValueEx(k, "ProgId")[0]
+                         if path.endswith("UserChoice")
+                         else winreg.QueryValue(k, ""))
+                if value:
+                    return str(value)
+        except OSError:
+            continue
+    return None
 
 
 # --------------------------------------------------------------------------------------
@@ -1174,6 +1258,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Windows 画面キャプチャ ffmpeg コマンドビルダー")
     ap.add_argument("--list", action="store_true",
                     help="音声エンドポイントと DirectShow デバイスを一覧表示して終了")
+    ap.add_argument("--register-pyw", action="store_true",
+                    help=".pyw をダブルクリックで開けるよう pythonw.exe に関連付ける")
+    ap.add_argument("--unregister-pyw", action="store_true",
+                    help="--register-pyw で作った関連付けを取り消す")
     args = ap.parse_args()
 
     if args.list:
@@ -1183,8 +1271,49 @@ def main() -> int:
         print("== DirectShow 音声デバイス (ffmpeg) ==")
         for n in list_dshow_audio():
             print(f"  {n}")
+        print(f"== .pyw の関連付け ==\n  {pyw_association() or '(未設定)'}")
         return 0
-    return run_gui()
+    if args.register_pyw:
+        exe = register_pyw()
+        print(f".pyw を次のプログラムに関連付けました:\n  {exe}\n"
+              f"ProgID: {pyw_association()}")
+        return 0
+    if args.unregister_pyw:
+        unregister_pyw()
+        print(f".pyw の関連付けを解除しました。現在: {pyw_association() or '(未設定)'}")
+        return 0
+
+    try:
+        return run_gui()
+    except Exception:
+        # pythonw.exe にはコンソールが無く、そのままでは何も表示されずに落ちる
+        return _report_fatal()
+
+
+def _report_fatal() -> int:
+    """起動時例外をダイアログとログファイルで見せる。"""
+    import tempfile  # noqa: PLC0415
+    import traceback  # noqa: PLC0415
+
+    text = traceback.format_exc()
+    path = os.path.join(tempfile.gettempdir(), "ffcapture-error.log")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError:
+        path = "(書き出せませんでした)"
+    try:
+        import tkinter as tk  # noqa: PLC0415
+        from tkinter import messagebox  # noqa: PLC0415
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showerror("ffcapture の起動に失敗しました",
+                             f"{text}\n\nログ: {path}")
+        r.destroy()
+    except Exception:
+        if sys.stderr is not None:
+            print(text, file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

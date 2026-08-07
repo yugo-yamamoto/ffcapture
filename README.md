@@ -16,11 +16,29 @@ Windows 用の画面キャプチャ **ffmpeg コマンドラインビルダー**
 
 ## 使い方
 
+**`ffcapture.pyw` をダブルクリック**すれば GUI が開きます。拡張子が `.pyw` なので
+`pythonw.exe` で起動し、黒いコンソール窓は出ません。
+
 ```console
-pythonw ffcapture.py     GUI を起動（コンソール窓なし）
-python  ffcapture.py     GUI を起動（コンソールあり）
-python  ffcapture.py --list   音声エンドポイントと DirectShow デバイスを一覧表示
+pythonw ffcapture.pyw            ダブルクリックと同じ（コンソール窓なし）
+python  ffcapture.pyw            コンソール付きで起動（ログを端末でも見たいとき）
+python  ffcapture.pyw --list     音声エンドポイントと DirectShow デバイスを一覧表示
 ```
+
+### ダブルクリックが効かないとき
+
+`.pyw` に関連付けが無いと、Windows は「このファイルを開く方法を選んでください」を出します。
+python.org 版の Python は既定で関連付けますが、**Microsoft Store 版では `.pyw` が
+未設定のまま**のことがあります。その場合は一度だけ実行してください:
+
+```console
+python ffcapture.pyw --register-pyw     .pyw を pythonw.exe に関連付ける
+python ffcapture.pyw --unregister-pyw   取り消す
+```
+
+`HKCU\Software\Classes` に書くだけなので管理者権限は不要です。ただし
+**この PC の `.pyw` ファイル全体**が対象になる点だけ注意してください
+（現在の割り当ては `--list` の末尾で確認できます）。
 
 ## できること
 

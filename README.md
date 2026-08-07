@@ -5,6 +5,8 @@ Windows 用の画面キャプチャ **ffmpeg コマンドラインビルダー**
 生成されるのは素の `ffmpeg` コマンドなので、GUI から直接録画してもいいし、
 コピーしてバッチやタスクスケジューラに貼ってもそのまま動きます。
 
+![ffcapture の画面](docs/screenshot.png)
+
 ## 必要なもの
 
 - Windows 10 / 11

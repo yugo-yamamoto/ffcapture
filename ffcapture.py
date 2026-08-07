@@ -488,6 +488,10 @@ def run_gui() -> int:
     mono = next((f for f in ("BIZ UDGothic", "MS Gothic", "Consolas")
                  if f in families), "Courier")
 
+    def wrap(px: int) -> int:
+        """wraplength は物理ピクセル指定なので、DPI 倍率に合わせて広げる。"""
+        return int(px * dpi / 96.0)
+
     state: dict = {"proc": None, "loopback": None}
 
     # ---------------- 変数 ----------------
@@ -636,7 +640,7 @@ def run_gui() -> int:
     btn_wrect = ttk.Button(f_pick, text="選択ウィンドウ → 矩形指定に変換")
     btn_wrect.grid(row=0, column=1)
 
-    ttk.Label(f_src, wraplength=430, foreground="#666",
+    ttk.Label(f_src, wraplength=wrap(430), foreground="#666",
               text="※ ウィンドウ指定は gdigrab がウィンドウ DC を BitBlt する方式のため、"
                    "ハードウェア描画のアプリ (ブラウザ・Electron 等) では黒画面や文字欠けに"
                    "なります。その場合は上のボタンで矩形指定に変換してください。"
@@ -659,7 +663,7 @@ def run_gui() -> int:
     e_abuf.grid(row=0, column=1, padx=4)
     e_abuf.bind("<KeyRelease>", refresh_preview)
 
-    ttk.Label(f_aud, textvariable=v_mixinfo, wraplength=390, foreground="#666"
+    ttk.Label(f_aud, textvariable=v_mixinfo, wraplength=wrap(390), foreground="#666"
               ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
     f_mix = ttk.Frame(f_aud)
@@ -734,7 +738,7 @@ def run_gui() -> int:
     ttk.Checkbutton(f_out, text="既存ファイルを上書きする (-y)", variable=v_overwrite,
                     command=refresh_preview).grid(row=1, column=0, sticky="w", pady=(4, 0))
     ttk.Label(f_out, text="※ MP4 は正常終了が必要です。中断が心配なら .mkv を推奨。",
-              foreground="#666", wraplength=380).grid(row=2, column=0, columnspan=2,
+              foreground="#666", wraplength=wrap(380)).grid(row=2, column=0, columnspan=2,
                                                       sticky="w", pady=(2, 0))
 
     ttk.Label(f_out, text="ffmpeg のパス").grid(row=3, column=0, sticky="w", pady=(8, 0))
@@ -763,7 +767,7 @@ def run_gui() -> int:
     ttk.Label(bar_cmd, text="生成されたコマンド").pack(side="left")
     ttk.Button(bar_cmd, text="再生成", command=refresh_preview).pack(side="right", padx=2)
 
-    txt_cmd = tk.Text(lower, height=5, wrap="word", font=(mono, 9), state="disabled")
+    txt_cmd = tk.Text(lower, height=4, wrap="word", font=(mono, 9), state="disabled")
     txt_cmd.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(2, 6))
 
     bar_log = ttk.Frame(lower)
@@ -775,7 +779,7 @@ def run_gui() -> int:
                                 txt_log.configure(state="disabled"))
                ).pack(side="right", padx=2)
 
-    txt_log = tk.Text(lower, height=12, wrap="none", font=(mono, 9), state="disabled")
+    txt_log = tk.Text(lower, height=8, wrap="none", font=(mono, 9), state="disabled")
     txt_log.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
     sb = ttk.Scrollbar(lower, orient="vertical", command=txt_log.yview)
     sb.grid(row=3, column=1, sticky="ns", pady=(2, 0))
@@ -1100,6 +1104,14 @@ def run_gui() -> int:
     threading.Thread(target=probe_encoders, daemon=True).start()
     refresh_preview()
     log("準備完了。対象を選んで『録画開始』を押してください。")
+
+    # 高 DPI 環境で画面からはみ出さないように初期サイズを画面内へ収める
+    root.update_idletasks()
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    w = min(root.winfo_reqwidth(), int(sw * 0.95))
+    h = min(root.winfo_reqheight(), int(sh * 0.88))
+    root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
+    root.minsize(int(w * 0.7), int(h * 0.6))
 
     root.mainloop()
     return 0

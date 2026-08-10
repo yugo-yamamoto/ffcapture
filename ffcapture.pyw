@@ -492,11 +492,11 @@ class Config:
         self.audio_device = ""          # 空なら音声なし
         self.audio_buffer = "50"
         # -itsoffset (ミリ秒、正で音声を遅らせる)。
-        # 既定は 0。以前 100 にしていたが、その根拠にした測定は ffplay で基準クリップを
-        # 再生しながら録画したもので、録画負荷で ffplay の映像側が遅れた分を
-        # 「音声が先行している」と読み違えていた。ずれ量は再生アプリと負荷で変わるため、
-        # tools/analyze_capture.py で各自の環境を実測して決める。
-        self.audio_offset_ms = 0
+        # dshow の音声は録画開始時点で約 1 秒ぶん溜まった状態から流れ始めるらしく、
+        # 無補正だと音声が 1 秒先行する。実測 5 通り（ddagrab / gdigrab、-af の有無）で
+        # すべて -967〜-1033ms、1000ms 補正すると +0/+33/-67ms に収まった。
+        # 音声デバイス依存の値なので、環境が変わったら tools/analyze_capture.py で測り直す。
+        self.audio_offset_ms = 1000
         # encode
         self.vcodec_key = "libx264 (CPU/H.264)"
         self.preset = "veryfast"
@@ -688,7 +688,7 @@ def run_gui() -> int:
 
     v_audio = tk.StringVar(value=NO_AUDIO)
     v_abuf = tk.StringVar(value="50")
-    v_aoff = tk.StringVar(value="0")
+    v_aoff = tk.StringVar(value="1000")
     v_mixinfo = tk.StringVar(value="")
 
     v_vcodec = tk.StringVar(value="libx264 (CPU/H.264)")
@@ -863,7 +863,7 @@ def run_gui() -> int:
     e_aoff = ttk.Entry(f_abuf, textvariable=v_aoff, width=6)
     e_aoff.grid(row=1, column=1, padx=4, pady=(4, 0))
     e_aoff.bind("<KeyRelease>", refresh_preview)
-    ttk.Label(f_abuf, text="正=音声を遅らせる", foreground="#666"
+    ttk.Label(f_abuf, text="正=音声を遅らせる（既定 1000ms）", foreground="#666"
               ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
     ttk.Label(f_aud, textvariable=v_mixinfo, wraplength=wrap(390), foreground="#666"

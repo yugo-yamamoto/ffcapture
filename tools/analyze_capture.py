@@ -142,8 +142,11 @@ def main() -> int:
 
     print(f"ファイル      : {path}")
     print(f"フレーム数    : {len(frames)}  ({len(frames)/fps:.2f} 秒 / {fps:g} fps)")
-    print(f"実効更新レート: {effective_fps(frames, fps):.1f} fps"
-          f"（{fps:g} fps に対して {effective_fps(frames, fps)/fps*100:.0f}%）")
+    eff = effective_fps(frames, fps)
+    print(f"画面が変化した回数: {eff:.1f} 回/秒"
+          f"（{fps:g} fps に対して {eff/fps*100:.0f}%）")
+    print("  ※ キャプチャ速度ではなく『映っている中身が変わった頻度』です。"
+          "静止部分だけを矩形で切り取ると低く出ます。")
     print(f"音声最大振幅  : {max(audio)} / 32767")
     if ref and bias:
         print(f"基準クリップ  : {ref} で較正 (バイアス {bias:+.0f} ms を差し引き)")
@@ -151,6 +154,9 @@ def main() -> int:
         print("基準クリップ  : synctest.mp4 が見つからず未較正（数十 ms のバイアスが残ります）")
     print()
     print(f"A/V ずれ      : {ms:+.0f} ms  (相関 {corr:.3f})")
+    if corr < 0.02:
+        print("  ※ 相関が低く、測定が不確かです。フラッシュが画面内に大きく写るように"
+              "録り直してください。")
     if abs(ms) < 25:
         print("  → 十分に合っています。")
     elif ms < 0:

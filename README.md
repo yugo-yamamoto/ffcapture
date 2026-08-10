@@ -42,13 +42,16 @@ python ffcapture.pyw --unregister-pyw   取り消す
 
 ## できること
 
-### 映像（gdigrab）
+### 映像
 
 | モード | 生成されるオプション |
 | --- | --- |
+| 画面全体 | `-f lavfi -i ddagrab=output_idx=0:framerate=30:draw_mouse=1` |
+| 矩形指定 | 上に `:video_size=WxH:offset_x=X:offset_y=Y` を追加 |
 | ウィンドウ | `-f gdigrab -i title=<ウィンドウタイトル>` |
-| 矩形指定 | `-f gdigrab -offset_x X -offset_y Y -video_size WxH -i desktop` |
-| 画面全体 | `-f gdigrab -i desktop` |
+
+gdigrab を選んだ場合は `-f gdigrab -offset_x X -offset_y Y -video_size WxH -i desktop` になります。
+ddagrab は D3D11 テクスチャを返すので、CPU エンコーダに渡す前に `hwdownload,format=bgra` を挟みます。
 
 - ウィンドウ一覧は EnumWindows で列挙（非表示の UWP ウィンドウは除外）
 - 画面をドラッグして範囲を選ぶオーバーレイ付き。マルチモニタの負座標にも対応
@@ -58,6 +61,28 @@ python ffcapture.pyw --unregister-pyw   取り消す
 > gdigrab のウィンドウ指定はウィンドウ DC を BitBlt する方式のため、ハードウェア描画の
 > アプリ（ブラウザ・Electron・ゲーム等）では黒画面や文字欠けになります。
 > その場合は「選択ウィンドウ → 矩形指定に変換」ボタンで矩形指定に切り替えてください。
+
+### 取り込み方式 — カクつくときはここ
+
+| 方式 | 実測キャプチャレート（全画面 2880x1800 / 30fps 指定） |
+| --- | --- |
+| **ddagrab**（既定） | **29.1 fps** |
+| gdigrab | 17.8 fps |
+
+`gdigrab` はウィンドウ DC を BitBlt でコピーするため、高解像度の全画面では 30fps
+指定でも実際には 18fps 前後しか取り込めず、足りない分は同じ画を複製して埋めます
+（`dup=122`）。これが「カクカク」の正体です。
+
+**ddagrab**（Desktop Duplication API）は GPU 側で画面を取得するので大幅に速く、
+30fps 指定でほぼ 30fps、60fps 指定でも 58fps 出ます。矩形指定・全画面で使えるので既定にしてあります。
+
+- **ウィンドウタイトル指定は gdigrab にしかありません。** ウィンドウを選ぶと自動で
+  gdigrab に切り替わり、他のモードに戻すと ddagrab に復帰します
+- ddagrab を持たない ffmpeg では自動的に gdigrab のみになります
+- ddagrab の矩形は**選択したモニタの左上が原点**です（gdigrab は仮想デスクトップ基準）
+
+エンコーダが追いつかない場合（ログの `speed=` が 1.0x を下回る場合）は、出力サイズを
+1080p に落とすか、ハードウェアエンコーダを選んでください。
 
 ### 音声（DirectShow）
 
@@ -105,7 +130,9 @@ Realtek のステレオミキサーは無音を録り続けます。この場合
 ### エンコード
 
 `libx264` / `libx265` / `h264_nvenc` / `hevc_nvenc` / `h264_qsv` / `h264_amf` に対応。
-起動時に `ffmpeg -encoders` を叩いて、実際に使えるものだけを候補に出します。
+起動時に**各エンコーダで実際に 1 フレームだけエンコードしてみて**、通ったものだけを候補に出します。
+`ffmpeg -encoders` はビルドに含まれるかを示すだけで GPU の有無は分からず、NVIDIA が無い機体でも
+`h264_nvenc` が一覧に載ってしまうためです。
 品質指定（CRF / CQ / QP / global_quality）はエンコーダごとに適切なオプションへ振り分けます。
 
 ### 出力先
@@ -127,17 +154,24 @@ GUI から実行した場合の「カレントディレクトリ」は ffcapture
 - 入力欄の右に解釈結果が秒で表示され、書式が不正なら赤字で警告します
 - 録画開始時に自動終了の予定時刻をログに出します
 
+### 音声オフセット
+
+音声が映像より早い／遅いときは「音声オフセット (ms)」で `-itsoffset` を付けられます
+（正の値で音声を遅らせる）。カチンコ試験での実測では系統的なずれは +70〜+140 ms 程度で、
+測定誤差と同程度でした。まずは取り込み方式を ddagrab にしてカクつきを解消してから、
+残るずれをここで詰めてください。
+
 ## 生成されるコマンドの例
 
 ```
-ffmpeg -hide_banner -y -f gdigrab -framerate 30 -draw_mouse 1 -thread_queue_size 1024 ^
-  -offset_x 100 -offset_y 200 -video_size 1280x720 -i desktop ^
+ffmpeg -hide_banner -y -f lavfi -thread_queue_size 1024 ^
+  -i ddagrab=output_idx=0:framerate=30:draw_mouse=1:video_size=1280x720:offset_x=100:offset_y=200 ^
   -f dshow -rtbufsize 256M -thread_queue_size 1024 -audio_buffer_size 50 ^
   -i "audio=ステレオ ミキサー (Realtek(R) Audio)" ^
   -map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -crf 23 ^
-  -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -pix_fmt yuv420p ^
+  -vf "hwdownload,format=bgra,scale=trunc(iw/2)*2:trunc(ih/2)*2" -pix_fmt yuv420p ^
   -c:a aac -b:a 192k -af aresample=async=1:first_pts=0 ^
-  -movflags +faststart capture_20260807_194530.mp4
+  -movflags +faststart capture_20260810_144059.mp4
 ```
 
 ## 停止のしかた

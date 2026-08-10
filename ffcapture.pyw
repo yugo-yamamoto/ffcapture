@@ -403,12 +403,28 @@ def measure_audio_level(device: str, seconds: int = 3) -> tuple[float, float] | 
     return float(mean.group(1)), float(peak.group(1))
 
 
-def list_ffmpeg_encoders() -> set[str]:
+def ffmpeg_has_ddagrab() -> bool:
+    """この ffmpeg が ddagrab (Desktop Duplication API) を持っているか。"""
     try:
-        r = _run_ffmpeg(["-encoders"])
+        r = _run_ffmpeg(["-filters"], 20)
     except Exception:
-        return set()
-    return {m.group(1) for m in re.finditer(r"^\s*[A-Z.]{6}\s+(\S+)", r.stdout, re.M)}
+        return False
+    return "ddagrab" in (r.stdout or "")
+
+
+def probe_encoder(name: str) -> bool:
+    """1 フレームだけ実際にエンコードして、この環境で本当に使えるか確かめる。
+
+    `ffmpeg -encoders` はビルドに含まれるかを示すだけで、GPU の有無は分からない。
+    NVIDIA が無い機体でも h264_nvenc は一覧に載るため、実行して判定する。
+    """
+    try:
+        r = _run_ffmpeg(["-loglevel", "error",
+                         "-f", "lavfi", "-i", "color=size=320x240:duration=0.1:rate=10",
+                         "-c:v", name, "-frames:v", "1", "-f", "null", "-"], 30)
+    except Exception:
+        return False
+    return r.returncode == 0
 
 
 # --------------------------------------------------------------------------------------
@@ -470,9 +486,12 @@ class Config:
         self.w, self.h = 1280, 720
         self.fps = 30
         self.draw_mouse = True
+        self.backend = "ddagrab"        # ddagrab | gdigrab
+        self.monitor = 0                # ddagrab の output_idx
         # audio
         self.audio_device = ""          # 空なら音声なし
         self.audio_buffer = "50"
+        self.audio_offset_ms = 0        # -itsoffset (ミリ秒、正で音声を遅らせる)
         # encode
         self.vcodec_key = "libx264 (CPU/H.264)"
         self.preset = "veryfast"
@@ -515,23 +534,39 @@ def _scale_filter(scale: str) -> str:
     return f"scale=-2:{height}"
 
 
+def uses_ddagrab(cfg: Config) -> bool:
+    """ddagrab を使うか。ウィンドウタイトル指定は gdigrab にしか無い。"""
+    return cfg.backend == "ddagrab" and cfg.source != "window"
+
+
 def build_args(cfg: Config) -> list[str]:
     """ffmpeg の argv を組み立てる。"""
     a: list[str] = ["ffmpeg", "-hide_banner"]
     a += ["-y"] if cfg.overwrite else ["-n"]
 
-    # ---- 入力 0: 映像 (gdigrab) ----
-    a += ["-f", "gdigrab",
-          "-framerate", str(cfg.fps),
-          "-draw_mouse", "1" if cfg.draw_mouse else "0",
-          "-thread_queue_size", "1024"]
-    if cfg.source == "window":
-        a += ["-i", f"title={cfg.title}"]
-    else:
+    # ---- 入力 0: 映像 ----
+    if uses_ddagrab(cfg):
+        # Desktop Duplication API。GPU 経由なので gdigrab の BitBlt より大幅に速い
+        opts = [f"output_idx={cfg.monitor}",
+                f"framerate={cfg.fps}",
+                f"draw_mouse={1 if cfg.draw_mouse else 0}"]
         if cfg.source == "region":
-            a += ["-offset_x", str(cfg.x), "-offset_y", str(cfg.y),
-                  "-video_size", f"{cfg.w}x{cfg.h}"]
-        a += ["-i", "desktop"]
+            opts += [f"video_size={cfg.w}x{cfg.h}",
+                     f"offset_x={cfg.x}", f"offset_y={cfg.y}"]
+        a += ["-f", "lavfi", "-thread_queue_size", "1024",
+              "-i", "ddagrab=" + ":".join(opts)]
+    else:
+        a += ["-f", "gdigrab",
+              "-framerate", str(cfg.fps),
+              "-draw_mouse", "1" if cfg.draw_mouse else "0",
+              "-thread_queue_size", "1024"]
+        if cfg.source == "window":
+            a += ["-i", f"title={cfg.title}"]
+        else:
+            if cfg.source == "region":
+                a += ["-offset_x", str(cfg.x), "-offset_y", str(cfg.y),
+                      "-video_size", f"{cfg.w}x{cfg.h}"]
+            a += ["-i", "desktop"]
 
     # ---- 入力 1: 音声 (DirectShow) ----
     has_audio = bool(cfg.audio_device)
@@ -541,6 +576,9 @@ def build_args(cfg: Config) -> list[str]:
               "-thread_queue_size", "1024"]
         if cfg.audio_buffer.strip():
             a += ["-audio_buffer_size", cfg.audio_buffer.strip()]
+        if cfg.audio_offset_ms:
+            # 音声を前後にずらす。正で音声を遅らせる
+            a += ["-itsoffset", f"{cfg.audio_offset_ms / 1000.0:.3f}"]
         a += ["-i", f"audio={cfg.audio_device}"]
         a += ["-map", "0:v:0", "-map", "1:a:0"]
     else:
@@ -563,7 +601,9 @@ def build_args(cfg: Config) -> list[str]:
             a += ["-global_quality", str(cfg.quality)]
     if enc["name"] == "libx265":
         a += ["-tag:v", "hvc1"]
-    a += ["-vf", _scale_filter(cfg.scale), "-pix_fmt", cfg.pix_fmt]
+    # ddagrab は D3D11 テクスチャを返すので、CPU エンコーダに渡す前に取り出す
+    prefix = "hwdownload,format=bgra," if uses_ddagrab(cfg) else ""
+    a += ["-vf", prefix + _scale_filter(cfg.scale), "-pix_fmt", cfg.pix_fmt]
 
     # ---- 音声エンコード ----
     if has_audio:
@@ -600,6 +640,8 @@ def command_line(cfg: Config) -> str:
 # --------------------------------------------------------------------------------------
 
 NO_AUDIO = "（音声なし）"
+BACKEND_DDA = "ddagrab (高速・推奨)"
+BACKEND_GDI = "gdigrab (ウィンドウ指定用)"
 
 
 def run_gui() -> int:
@@ -628,7 +670,7 @@ def run_gui() -> int:
         """wraplength は物理ピクセル指定なので、DPI 倍率に合わせて広げる。"""
         return int(px * dpi / 96.0)
 
-    state: dict = {"proc": None, "loopback": None}
+    state: dict = {"proc": None, "loopback": None, "has_dda": False}
 
     # ---------------- 変数 ----------------
     v_source = tk.StringVar(value="window")
@@ -637,9 +679,11 @@ def run_gui() -> int:
     v_w, v_h = tk.StringVar(value="1280"), tk.StringVar(value="720")
     v_fps = tk.StringVar(value="30")
     v_mouse = tk.BooleanVar(value=True)
+    v_backend = tk.StringVar(value=BACKEND_DDA)
 
     v_audio = tk.StringVar(value=NO_AUDIO)
     v_abuf = tk.StringVar(value="50")
+    v_aoff = tk.StringVar(value="0")
     v_mixinfo = tk.StringVar(value="")
 
     v_vcodec = tk.StringVar(value="libx264 (CPU/H.264)")
@@ -688,10 +732,12 @@ def run_gui() -> int:
         c.h -= c.h % 2
         c.fps = max(1, as_int(v_fps, 30))
         c.draw_mouse = v_mouse.get()
+        c.backend = "ddagrab" if v_backend.get() == BACKEND_DDA else "gdigrab"
 
         dev = v_audio.get().strip()
         c.audio_device = "" if dev in ("", NO_AUDIO) else dev
         c.audio_buffer = v_abuf.get().strip()
+        c.audio_offset_ms = as_int(v_aoff, 0)
 
         c.vcodec_key = v_vcodec.get()
         c.preset = v_preset.get()
@@ -761,19 +807,24 @@ def run_gui() -> int:
         e.bind("<KeyRelease>", refresh_preview)
 
     ttk.Radiobutton(f_src, text="画面全体", variable=v_source, value="fullscreen",
-                    command=lambda: on_source()).grid(row=2, column=0, sticky="w",
-                                                      pady=(6, 0))
+                    command=lambda: on_source()).grid(row=2, column=0, columnspan=3,
+                                                      sticky="w", pady=(6, 0))
+    # fps・取り込み方式はラジオボタンとは独立した設定なので、行を分ける
     f_misc = ttk.Frame(f_src)
-    f_misc.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(6, 0))
+    f_misc.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
     ttk.Label(f_misc, text="fps").grid(row=0, column=0)
     e_fps = ttk.Entry(f_misc, textvariable=v_fps, width=5)
-    e_fps.grid(row=0, column=1, padx=(2, 10))
+    e_fps.grid(row=0, column=1, padx=(2, 14))
     e_fps.bind("<KeyRelease>", refresh_preview)
+    ttk.Label(f_misc, text="取り込み").grid(row=0, column=2)
+    cb_backend = ttk.Combobox(f_misc, textvariable=v_backend, state="readonly", width=22,
+                              values=[BACKEND_DDA, BACKEND_GDI])
+    cb_backend.grid(row=0, column=3, padx=(2, 14))
     ttk.Checkbutton(f_misc, text="マウスカーソルを含める", variable=v_mouse,
-                    command=refresh_preview).grid(row=0, column=2)
+                    command=refresh_preview).grid(row=0, column=4)
 
     f_pick = ttk.Frame(f_src)
-    f_pick.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+    f_pick.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
     btn_drag = ttk.Button(f_pick, text="画面をドラッグして範囲選択")
     btn_drag.grid(row=0, column=0, padx=(0, 6))
     btn_wrect = ttk.Button(f_pick, text="選択ウィンドウ → 矩形指定に変換")
@@ -783,7 +834,7 @@ def run_gui() -> int:
               text="※ ウィンドウ指定は gdigrab がウィンドウ DC を BitBlt する方式のため、"
                    "ハードウェア描画のアプリ (ブラウザ・Electron 等) では黒画面や文字欠けに"
                    "なります。その場合は上のボタンで矩形指定に変換してください。"
-              ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+              ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     # --- 音声 ---
     f_aud = ttk.LabelFrame(main, text="音声ソース (DirectShow)", padding=8)
@@ -803,6 +854,12 @@ def run_gui() -> int:
     e_abuf.bind("<KeyRelease>", refresh_preview)
     btn_test = ttk.Button(f_abuf, text="音量を3秒テスト")
     btn_test.grid(row=0, column=2, padx=(12, 0))
+    ttk.Label(f_abuf, text="音声オフセット (ms)").grid(row=1, column=0, pady=(4, 0))
+    e_aoff = ttk.Entry(f_abuf, textvariable=v_aoff, width=6)
+    e_aoff.grid(row=1, column=1, padx=4, pady=(4, 0))
+    e_aoff.bind("<KeyRelease>", refresh_preview)
+    ttk.Label(f_abuf, text="正=音声を遅らせる", foreground="#666"
+              ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
     ttk.Label(f_aud, textvariable=v_mixinfo, wraplength=wrap(390), foreground="#666"
               ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -950,6 +1007,16 @@ def run_gui() -> int:
     def on_source(*_):
         s = v_source.get()
         cb_win.configure(state="readonly" if s == "window" else "disabled")
+        # ddagrab にウィンドウタイトル指定は無いので、その間だけ gdigrab に固定する
+        if s == "window":
+            if v_backend.get() != BACKEND_GDI:
+                state["saved_backend"] = v_backend.get()
+                v_backend.set(BACKEND_GDI)
+            cb_backend.configure(state="disabled")
+        else:
+            if state.get("saved_backend"):
+                v_backend.set(state.pop("saved_backend"))
+            cb_backend.configure(state="readonly" if state.get("has_dda") else "disabled")
         for child in f_rect.winfo_children():
             if isinstance(child, ttk.Entry):
                 child.configure(state="normal" if s == "region" else "disabled")
@@ -980,7 +1047,7 @@ def run_gui() -> int:
     cb_limit.bind("<<ComboboxSelected>>", on_limit)
     cb_limit.bind("<KeyRelease>", on_limit)
     cb_vc.bind("<<ComboboxSelected>>", on_vcodec)
-    for cb in (cb_win, cb_audio, cb_preset):
+    for cb in (cb_win, cb_audio, cb_preset, cb_backend):
         cb.bind("<<ComboboxSelected>>", refresh_preview)
     for var in (v_scale, v_pix, v_acodec, v_abr):
         var.trace_add("write", lambda *_: refresh_preview())
@@ -1101,17 +1168,32 @@ def run_gui() -> int:
     btn_test.configure(command=test_audio)
 
     def probe_encoders():
-        avail = list_ffmpeg_encoders()
-        if not avail:
-            log("ffmpeg を実行できませんでした。パスを確認してください。")
+        has_dda = ffmpeg_has_ddagrab()
+        state["has_dda"] = has_dda
+        if has_dda:
+            log("ddagrab (Desktop Duplication API) が使えます。gdigrab より大幅に高速です。")
+        else:
+            log("この ffmpeg には ddagrab がありません。gdigrab のみ使用します。")
+            root.after(0, lambda: (v_backend.set(BACKEND_GDI),
+                                   cb_backend.configure(state="disabled")))
+        root.after(0, on_source)
+        usable = [k for k, v in VIDEO_ENCODERS.items() if probe_encoder(v["name"])]
+        if not usable:
+            log("使える映像エンコーダがありません。ffmpeg が動くか確認してください。")
             return
-        usable = [k for k, v in VIDEO_ENCODERS.items() if v["name"] in avail]
         missing = [k for k in VIDEO_ENCODERS if k not in usable]
-        root.after(0, lambda: cb_vc.configure(values=usable or list(VIDEO_ENCODERS)))
-        log("利用可能な映像エンコーダ: "
+
+        def apply():
+            cb_vc.configure(values=usable)
+            if v_vcodec.get() not in usable:
+                v_vcodec.set(usable[0])
+                on_vcodec()
+
+        root.after(0, apply)
+        log("実際に動く映像エンコーダ: "
             + ", ".join(VIDEO_ENCODERS[k]["name"] for k in usable))
         if missing:
-            log("この ffmpeg では使えないもの: "
+            log("この環境では動かないもの（GPU 非搭載など）: "
                 + ", ".join(VIDEO_ENCODERS[k]["name"] for k in missing))
 
     # ---------------- 矩形選択オーバーレイ ----------------

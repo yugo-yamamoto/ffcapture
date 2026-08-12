@@ -472,6 +472,62 @@ VIDEO_ENCODERS = {
 
 AUDIO_ENCODERS = ["aac", "libopus", "libmp3lame", "pcm_s16le"]
 
+# エンコード欄のラベルにマウスを乗せたときに出す解説
+TIP_VCODEC = (
+    "-c:v に入る映像エンコーダ。\n\n"
+    "・libx264 … CPU で処理。互換性が最も高く迷ったらこれ\n"
+    "・libx265 … 同じ画質でファイルが小さいが、重く再生互換性は落ちる\n"
+    "・h264_qsv / h264_nvenc / h264_amf … GPU が処理するのでCPU負荷が下がり、"
+    "高解像度でも取りこぼしにくい\n\n"
+    "起動時に各エンコーダで実際に1フレームだけ試し、通ったものだけを候補に出しています。"
+    "GPU が無い機体では nvenc / amf は一覧から消えます。")
+
+TIP_PRESET = (
+    "エンコード速度と圧縮効率の交換レート。速いほど CPU を使わない代わりに"
+    "ファイルが大きくなります。\n\n"
+    "画面録画では取りこぼしを防ぐほうが優先なので veryfast 前後が無難です。"
+    "ログの speed= が 1.0x を下回るなら、より速い側へ動かしてください。\n\n"
+    "目盛りはエンコーダごとに異なります（x264/x265 は ultrafast〜slow、"
+    "NVENC は p1〜p7、AMF は speed/balanced/quality）。")
+
+TIP_QUALITY = (
+    "数値が小さいほど高画質・大容量。固定品質でエンコードするので、"
+    "画面の動きが少ない場面では自動的にビットレートが下がります。\n\n"
+    "エンコーダごとにオプション名が変わりますが役割は同じです"
+    "（x264/x265 は -crf、NVENC は -cq、QSV は -global_quality、AMF は -qp）。\n\n"
+    "libx264 の目安: 18 でほぼ無劣化、23 が既定、28 で劣化が分かる。"
+    "libx265 は同じ数値でより高圧縮なので 28 前後が x264 の 23 相当です。")
+
+TIP_SCALE = (
+    "-vf の scale に入る出力解像度。\n\n"
+    "「そのまま」でも縦横を偶数に丸めます（yuv420p は色差を半分に間引くため"
+    "奇数サイズを扱えません）。\n\n"
+    "1080p などを選ぶと高さをその値に合わせ、幅は比率を保ったまま偶数に丸めます。"
+    "縮小するとエンコード負荷とファイルサイズが下がるので、"
+    "speed= が 1.0x を割るときの対処にも使えます。")
+
+TIP_PIXFMT = (
+    "出力の色形式。\n\n"
+    "・yuv420p … 色差を縦横とも半分に間引く。ブラウザや一般的なプレイヤーが"
+    "確実に再生できる標準的な選択\n"
+    "・yuv444p … 間引かないので細い文字や図形の色にじみが減る。"
+    "対応プレイヤーは限られ、ファイルも大きい\n"
+    "・nv12 … ハードウェアエンコーダが内部で使う並び\n\n"
+    "画面録画で文字のにじみが気になる場合だけ yuv444p を検討してください。")
+
+TIP_ACODEC = (
+    "-c:a に入る音声エンコーダ。\n\n"
+    "・aac … MP4 の標準。互換性が最も高い\n"
+    "・libopus … 同じビットレートで高音質だが、MP4 では扱いが悪く MKV 向き\n"
+    "・libmp3lame … 古い環境向け\n"
+    "・pcm_s16le … 無圧縮。音声ビットレートの指定は付きません")
+
+TIP_ABITRATE = (
+    "-b:a の値。音声 1 秒あたりのデータ量です。\n\n"
+    "画面録画の音声（会話・操作音）なら 128k で十分、音楽を含むなら 192k〜256k。"
+    "上げても元の音より良くはなりません。\n\n"
+    "音声コーデックに pcm_s16le を選んだ場合、この指定は付きません。")
+
 
 class Config:
     """GUI の入力値をまとめた素の設定オブジェクト。"""
@@ -673,6 +729,49 @@ def run_gui() -> int:
         """wraplength は物理ピクセル指定なので、DPI 倍率に合わせて広げる。"""
         return int(px * dpi / 96.0)
 
+    def tooltip(widget, text: str):
+        """マウスを乗せている間だけ解説を出す。"""
+        st = {"win": None, "job": None}
+
+        def hide(_e=None):
+            if st["job"] is not None:
+                widget.after_cancel(st["job"])
+                st["job"] = None
+            if st["win"] is not None:
+                st["win"].destroy()
+                st["win"] = None
+
+        def show():
+            st["job"] = None
+            if st["win"] is not None:
+                return
+            tw = tk.Toplevel(widget)
+            tw.overrideredirect(True)
+            tw.attributes("-topmost", True)
+            tk.Label(tw, text=text, justify="left", wraplength=wrap(420),
+                     font=(jp or "TkDefaultFont", 9),
+                     bg="#ffffe1", fg="#202020", relief="solid", bd=1,
+                     padx=10, pady=8).pack()
+            tw.update_idletasks()
+            x = widget.winfo_rootx()
+            y = widget.winfo_rooty() + widget.winfo_height() + 4
+            # 画面からはみ出すときは上側 / 左側へ寄せる
+            if y + tw.winfo_height() > widget.winfo_screenheight():
+                y = widget.winfo_rooty() - tw.winfo_height() - 4
+            x = min(x, widget.winfo_screenwidth() - tw.winfo_width() - 8)
+            tw.geometry(f"+{max(0, x)}+{max(0, y)}")
+            st["win"] = tw
+
+        def enter(_e=None):
+            hide()
+            st["job"] = widget.after(350, show)
+
+        widget.configure(cursor="question_arrow")
+        widget.bind("<Enter>", enter)
+        widget.bind("<Leave>", hide)
+        widget.bind("<Button>", hide)
+        widget.bind("<Destroy>", hide)
+
     state: dict = {"loopback": None, "has_dda": False}
 
     # ---------------- 変数 ----------------
@@ -871,36 +970,50 @@ def run_gui() -> int:
     f_enc.grid(row=1, column=0, sticky="nsew", padx=(0, 4))
     f_enc.columnconfigure(1, weight=1)
 
-    ttk.Label(f_enc, text="映像コーデック").grid(row=0, column=0, sticky="w")
+    lb_vc = ttk.Label(f_enc, text="映像コーデック")
+    lb_vc.grid(row=0, column=0, sticky="w")
+    tooltip(lb_vc, TIP_VCODEC)
     cb_vc = ttk.Combobox(f_enc, textvariable=v_vcodec, state="readonly",
                          values=list(VIDEO_ENCODERS), width=26)
     cb_vc.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
 
-    ttk.Label(f_enc, text="プリセット").grid(row=1, column=0, sticky="w")
+    lb_preset = ttk.Label(f_enc, text="プリセット")
+    lb_preset.grid(row=1, column=0, sticky="w")
+    tooltip(lb_preset, TIP_PRESET)
     cb_preset = ttk.Combobox(f_enc, textvariable=v_preset, state="readonly", width=26)
     cb_preset.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
 
-    ttk.Label(f_enc, textvariable=v_qlabel).grid(row=2, column=0, sticky="w")
+    lb_q = ttk.Label(f_enc, textvariable=v_qlabel)
+    lb_q.grid(row=2, column=0, sticky="w")
+    tooltip(lb_q, TIP_QUALITY)
     sp_q = ttk.Spinbox(f_enc, from_=0, to=51, textvariable=v_quality, width=6,
                        command=refresh_preview)
     sp_q.grid(row=2, column=1, sticky="w", padx=4, pady=2)
     sp_q.bind("<KeyRelease>", refresh_preview)
 
-    ttk.Label(f_enc, text="出力サイズ").grid(row=3, column=0, sticky="w")
+    lb_scale = ttk.Label(f_enc, text="出力サイズ")
+    lb_scale.grid(row=3, column=0, sticky="w")
+    tooltip(lb_scale, TIP_SCALE)
     ttk.Combobox(f_enc, textvariable=v_scale, state="readonly", width=26,
                  values=["そのまま", "1080p", "720p", "480p", "75%", "50%"]
                  ).grid(row=3, column=1, sticky="ew", padx=4, pady=2)
 
-    ttk.Label(f_enc, text="pix_fmt").grid(row=4, column=0, sticky="w")
+    lb_pix = ttk.Label(f_enc, text="pix_fmt")
+    lb_pix.grid(row=4, column=0, sticky="w")
+    tooltip(lb_pix, TIP_PIXFMT)
     ttk.Combobox(f_enc, textvariable=v_pix, state="readonly", width=26,
                  values=["yuv420p", "yuv444p", "nv12"]
                  ).grid(row=4, column=1, sticky="ew", padx=4, pady=2)
 
-    ttk.Label(f_enc, text="音声コーデック").grid(row=5, column=0, sticky="w")
+    lb_ac = ttk.Label(f_enc, text="音声コーデック")
+    lb_ac.grid(row=5, column=0, sticky="w")
+    tooltip(lb_ac, TIP_ACODEC)
     ttk.Combobox(f_enc, textvariable=v_acodec, state="readonly", width=26,
                  values=AUDIO_ENCODERS).grid(row=5, column=1, sticky="ew", padx=4, pady=2)
 
-    ttk.Label(f_enc, text="音声ビットレート").grid(row=6, column=0, sticky="w")
+    lb_abr = ttk.Label(f_enc, text="音声ビットレート")
+    lb_abr.grid(row=6, column=0, sticky="w")
+    tooltip(lb_abr, TIP_ABITRATE)
     ttk.Combobox(f_enc, textvariable=v_abr, width=26,
                  values=["96k", "128k", "160k", "192k", "256k", "320k"]
                  ).grid(row=6, column=1, sticky="ew", padx=4, pady=2)

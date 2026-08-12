@@ -478,7 +478,7 @@ class Config:
 
     def __init__(self):
         # video source
-        self.source = "window"          # window | region | fullscreen
+        self.source = "fullscreen"      # fullscreen | region | window
         self.title = ""
         self.x = self.y = 0
         self.w, self.h = 1280, 720
@@ -676,7 +676,7 @@ def run_gui() -> int:
     state: dict = {"loopback": None, "has_dda": False}
 
     # ---------------- 変数 ----------------
-    v_source = tk.StringVar(value="window")
+    v_source = tk.StringVar(value="fullscreen")
     v_title = tk.StringVar()
     v_x, v_y = tk.StringVar(value="0"), tk.StringVar(value="0")
     v_w, v_h = tk.StringVar(value="1280"), tk.StringVar(value="720")

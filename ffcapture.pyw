@@ -773,19 +773,9 @@ def run_gui() -> int:
     f_src.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 6))
     f_src.columnconfigure(1, weight=1)
 
-    ttk.Radiobutton(f_src, text="ウィンドウ", variable=v_source, value="window",
-                    command=lambda: on_source()).grid(row=0, column=0, sticky="w")
-    cb_win = ttk.Combobox(f_src, textvariable=v_title, state="readonly", width=42)
-    cb_win.grid(row=0, column=1, sticky="ew", padx=4)
-
-    def refresh_windows():
-        wins = enum_windows()
-        cb_win["values"] = [w["title"] for w in wins]
-        log(f"ウィンドウを {len(wins)} 件検出しました。")
-        refresh_preview()
-
-    ttk.Button(f_src, text="更新", width=6,
-               command=refresh_windows).grid(row=0, column=2, padx=2)
+    ttk.Radiobutton(f_src, text="画面全体", variable=v_source, value="fullscreen",
+                    command=lambda: on_source()).grid(row=0, column=0, columnspan=3,
+                                                      sticky="w")
 
     ttk.Radiobutton(f_src, text="矩形指定", variable=v_source, value="region",
                     command=lambda: on_source()).grid(row=1, column=0, sticky="w",
@@ -798,9 +788,20 @@ def run_gui() -> int:
         e.grid(row=0, column=i * 2 + 1)
         e.bind("<KeyRelease>", refresh_preview)
 
-    ttk.Radiobutton(f_src, text="画面全体", variable=v_source, value="fullscreen",
-                    command=lambda: on_source()).grid(row=2, column=0, columnspan=3,
-                                                      sticky="w", pady=(6, 0))
+    ttk.Radiobutton(f_src, text="ウィンドウ", variable=v_source, value="window",
+                    command=lambda: on_source()).grid(row=2, column=0, sticky="w",
+                                                      pady=(6, 0))
+    cb_win = ttk.Combobox(f_src, textvariable=v_title, state="readonly", width=42)
+    cb_win.grid(row=2, column=1, sticky="ew", padx=4, pady=(6, 0))
+
+    def refresh_windows():
+        wins = enum_windows()
+        cb_win["values"] = [w["title"] for w in wins]
+        log(f"ウィンドウを {len(wins)} 件検出しました。")
+        refresh_preview()
+
+    ttk.Button(f_src, text="更新", width=6,
+               command=refresh_windows).grid(row=2, column=2, padx=2, pady=(6, 0))
     # fps・取り込み方式はラジオボタンとは独立した設定なので、行を分ける
     f_misc = ttk.Frame(f_src)
     f_misc.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))

@@ -1291,6 +1291,21 @@ def run_gui() -> int:
         ov.geometry(f"{vw}x{vh}+{vx}+{vy}")
         cv = tk.Canvas(ov, bg="black", highlightthickness=0, cursor="cross")
         cv.pack(fill="both", expand=True)
+
+        # 自分のウィンドウが写り込むと、その下にある領域を選べない。選択中だけ引っ込める。
+        # オーバーレイを作ってから隠す（親が非表示のまま子 Toplevel を作らないため）。
+        def restore(e=None):
+            # <Destroy> は子ウィジェットの破棄でも飛んでくるので、オーバーレイ本体だけ見る
+            if e is not None and e.widget is not ov:
+                return
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+
+        ov.bind("<Destroy>", restore)
+        root.withdraw()
+        root.update_idletasks()
+
         info = cv.create_text(20, 20, anchor="nw", fill="#ffffff",
                               font=(jp or "TkDefaultFont", 14),
                               text="ドラッグして範囲を選択 / Esc でキャンセル")

@@ -28,7 +28,6 @@ import datetime as dt
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -36,7 +35,6 @@ import time
 
 IS_WINDOWS = os.name == "nt"
 CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
-CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WINDOWS else 0
 
 # ループバック録音に使える名前のパターン（ステレオミキサー / 仮想デバイス）
 LOOPBACK_NAME_RE = re.compile(
@@ -675,7 +673,7 @@ def run_gui() -> int:
         """wraplength は物理ピクセル指定なので、DPI 倍率に合わせて広げる。"""
         return int(px * dpi / 96.0)
 
-    state: dict = {"proc": None, "loopback": None, "has_dda": False}
+    state: dict = {"loopback": None, "has_dda": False}
 
     # ---------------- 変数 ----------------
     v_source = tk.StringVar(value="window")
@@ -706,7 +704,6 @@ def run_gui() -> int:
     v_overwrite = tk.BooleanVar(value=True)
     v_limit_on = tk.BooleanVar(value=False)
     v_limit = tk.StringVar(value="00:10:00")
-    v_status = tk.StringVar(value="待機中")
 
     # ---------------- ログ ----------------
     def log(msg: str):
@@ -755,16 +752,6 @@ def run_gui() -> int:
         c.overwrite = v_overwrite.get()
         c.duration = v_limit.get().strip() if v_limit_on.get() else ""
         return c
-
-    def validate(c: Config) -> str | None:
-        if c.source == "window" and not c.title:
-            return "ウィンドウタイトルを選択してください。"
-        if c.duration and duration_seconds(c.duration) is None:
-            return ("最大録画時間の書式が不正です。"
-                    "HH:MM:SS（例 00:05:00）か秒数（例 300）で指定してください。")
-        if not c.outfile:
-            return "出力ファイルを指定してください。"
-        return None
 
     def refresh_preview(*_):
         txt_cmd.configure(state="normal")
@@ -927,14 +914,7 @@ def run_gui() -> int:
     e_out = ttk.Entry(f_out, textvariable=v_out)
     e_out.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
-    lbl_cwd = ttk.Label(f_out, foreground="#666", wraplength=wrap(380))
-    lbl_cwd.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
-
-    def refresh_outpath(*_):
-        lbl_cwd.configure(text="→ " + os.path.abspath(v_out.get().strip() or "."))
-        refresh_preview()
-
-    e_out.bind("<KeyRelease>", refresh_outpath)
+    e_out.bind("<KeyRelease>", refresh_preview)
 
     ttk.Checkbutton(f_out, text="既存ファイルを上書きする (-y)", variable=v_overwrite,
                     command=refresh_preview).grid(row=3, column=0, sticky="w", pady=(4, 0))
@@ -968,7 +948,13 @@ def run_gui() -> int:
     bar_cmd = ttk.Frame(lower)
     bar_cmd.grid(row=0, column=0, columnspan=2, sticky="ew")
     ttk.Label(bar_cmd, text="生成されたコマンド").pack(side="left")
-    ttk.Button(bar_cmd, text="再生成", command=refresh_preview).pack(side="right", padx=2)
+    def copy_command():
+        root.clipboard_clear()
+        root.clipboard_append(txt_cmd.get("1.0", "end-1c"))
+        log("コマンドをクリップボードにコピーしました。")
+
+    ttk.Button(bar_cmd, text="コマンドをコピー",
+               command=copy_command).pack(side="right", padx=2)
 
     txt_cmd = tk.Text(lower, height=4, wrap="word", font=(mono, 9), state="disabled")
     txt_cmd.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(2, 6))
@@ -987,26 +973,6 @@ def run_gui() -> int:
     sb = ttk.Scrollbar(lower, orient="vertical", command=txt_log.yview)
     sb.grid(row=3, column=1, sticky="ns", pady=(2, 0))
     txt_log.configure(yscrollcommand=sb.set)
-
-    # --- 操作バー ---
-    bar = ttk.Frame(root, padding=(8, 0, 8, 8))
-    bar.grid(row=2, column=0, sticky="ew")
-    bar.columnconfigure(3, weight=1)
-
-    def copy_text(widget, what: str):
-        root.clipboard_clear()
-        root.clipboard_append(widget.get("1.0", "end-1c"))
-        log(f"{what}をクリップボードにコピーしました。")
-
-    ttk.Button(bar, text="コマンドをコピー",
-               command=lambda: copy_text(txt_cmd, "コマンド")).grid(row=0, column=0, padx=2)
-    ttk.Button(bar, text="ログをコピー",
-               command=lambda: copy_text(txt_log, "ログ")).grid(row=0, column=1, padx=2)
-    btn_start = ttk.Button(bar, text="録画開始")
-    btn_start.grid(row=0, column=2, padx=(16, 2))
-    btn_stop = ttk.Button(bar, text="停止", state="disabled")
-    btn_stop.grid(row=0, column=3, sticky="w", padx=2)
-    ttk.Label(bar, textvariable=v_status).grid(row=0, column=4, sticky="e")
 
     # ---------------- 状態遷移 ----------------
     def on_source(*_):
@@ -1277,104 +1243,6 @@ def run_gui() -> int:
     btn_drag.configure(command=pick_region)
     btn_wrect.configure(command=use_window_rect)
 
-    # ---------------- 録画 ----------------
-    def set_running(running: bool):
-        btn_start.configure(state="disabled" if running else "normal")
-        btn_stop.configure(state="normal" if running else "disabled")
-        v_status.set("録画中…" if running else "待機中")
-
-    def start():
-        if state["proc"] is not None:
-            return
-        c = collect()
-        err = validate(c)
-        if err:
-            messagebox.showwarning("入力を確認してください", err)
-            return
-        argv = build_args(c)
-        log("実行: " + command_line(c))
-        log(f"出力先: {os.path.abspath(c.outfile)}")
-        if c.duration:
-            sec = duration_seconds(c.duration) or 0.0
-            end = dt.datetime.now() + dt.timedelta(seconds=sec)
-            log(f"最大録画時間 {c.duration} ({sec:g} 秒)。{end:%H:%M:%S} 頃に自動終了します。")
-
-        try:
-            proc = subprocess.Popen(
-                argv,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
-        except Exception as e:
-            messagebox.showerror("起動できません", f"ffmpeg を起動できませんでした:\n{e}")
-            return
-        state["proc"] = proc
-        set_running(True)
-
-        def reader():
-            for raw in iter(proc.stderr.readline, b""):
-                line = raw.decode("utf-8", "replace").rstrip()
-                if line:
-                    log(line)
-            log(f"ffmpeg 終了 (exit={proc.wait()})")
-            root.after(0, finished)
-
-        threading.Thread(target=reader, daemon=True).start()
-
-    def finished():
-        state["proc"] = None
-        set_running(False)
-
-    def stop():
-        proc = state["proc"]
-        if proc is None:
-            return
-        v_status.set("停止処理中…")
-        try:
-            if proc.stdin:
-                proc.stdin.write(b"q")     # ffmpeg の対話コマンドで正常終了
-                proc.stdin.flush()
-                proc.stdin.close()
-        except Exception:
-            pass
-
-        def watchdog():
-            try:
-                proc.wait(timeout=5)
-                return
-            except Exception:
-                pass
-            if IS_WINDOWS:
-                log("'q' で終わらないため CTRL_BREAK を送ります。")
-                try:
-                    os.kill(proc.pid, signal.CTRL_BREAK_EVENT)  # SIGINT 相当
-                except Exception:
-                    pass
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                log("正常終了しないため強制終了します。ファイルが壊れる可能性があります。")
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
-        threading.Thread(target=watchdog, daemon=True).start()
-
-    btn_start.configure(command=start)
-    btn_stop.configure(command=stop)
-
-    def on_close():
-        if state["proc"] is not None:
-            if not messagebox.askyesno("確認", "録画中です。停止して終了しますか？"):
-                return
-            stop()
-            time.sleep(1.0)
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
-
     # ---------------- 初期化 ----------------
     if not IS_WINDOWS:
         log("警告: このツールは Windows 専用です (gdigrab / DirectShow)。")
@@ -1385,12 +1253,11 @@ def run_gui() -> int:
     on_vcodec()
     on_source()
     on_limit()
-    refresh_outpath()
     refresh_windows()
     refresh_audio(True)
     threading.Thread(target=probe_encoders, daemon=True).start()
     refresh_preview()
-    log("準備完了。対象を選んで『録画開始』を押してください。")
+    log("準備完了。コマンドを組み立てて『コマンドをコピー』で貼り付けてください。")
 
     # 高 DPI 環境で画面からはみ出さないように初期サイズを画面内へ収める
     root.update_idletasks()
